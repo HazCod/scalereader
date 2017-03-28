@@ -2,7 +2,7 @@
 
 # scalereader.py ~ python 3
 # https://github.com/hazcod/scalereader
-# Requires pyserial, pymysql
+# Dependencies: pip3 install -r requirements.txt
 
 import argparse
 import pypyodbc
@@ -11,14 +11,6 @@ from serial import Serial, SerialException
 from sys import version, exit
 from time import strftime, sleep
 from os import path
-
-#[COM3]
-#Init=9600,e,7,1
-
-#[COM7]
-#init=2400,e,7,1
-
-#88
 
 settingsFile = 'scalereader.ini'
 logFile = None
