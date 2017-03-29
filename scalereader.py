@@ -16,6 +16,7 @@ settingsFile = 'scalereader.ini'
 logFile = None
 debugging = False
 job = False
+conn = None
 
 def log(msg):
     global logFile
@@ -53,6 +54,7 @@ def scanSerial():
 
 def listPorts():
     ports = scanSerial()
+    debug(ports)
     log("Available serial ports:")
     for port, name in ports:
         log(str(port) + " : " + name)
@@ -76,7 +78,7 @@ def process8304(sequence):
     if ((sequence[3]&4 != 0) == True):
         polarity_netto = "-"
 
-    netto_weight = getStr(sequence, 6, len(sequence))
+    netto_weight = getStr(sequence, 2, 6)
     debug("Netto weight: " + netto_weight)
 
     return netto_weight
@@ -85,106 +87,99 @@ def process8305(sequence):
     global debugging
     debug("processLine 8305 input: " + str(sequence))
     polarity_bruto = sequence[2]
-    bruto_weight = getStr(sequence, 3, 7)
-    print(bruto_weight)
-    debug("Weight is " + str(bruto_weight))
+    bruto_weight = getStr(sequence, 6, 14)
 
     return int(bruto_weight)
 
 def read( portSettings ):
-    serial = None
-    linebuffer = None
+	serial = None
+	inserial = None
 
-    try:
-        debug("creating serial object")
-        serial = Serial(
-            port=str(portSettings['port']),
-            baudrate=int(portSettings['baud']),
-            timeout=float(portSettings['timeout'])
-        )
+	try:
+		try:
+			debug("creating serial object for " + portSettings['port'])
+			if None is None:
+				serial = Serial(port=str(portSettings['port']),
+						baudrate=int(portSettings['baud']),
+						# bytesize=int(serialSettings['bytesize']),
+						# parity=str(serialSettings['parity']),
+						# stopbits=int(serialSettings['stopbits']),
+						timeout=float(portSettings['timeout'])
+						)
+			if (serial.isOpen()):
 
-        if not serial.isOpen():
-            error('Serial port not open')
+				if inserial is None:
+					debug("flushing")
+					serial.flushInput()
+					serial.flushOutput()
 
-        serial.flushInput()
-        serial.flushOutput()
+				linebuffer = None
+				maxretries = int(portSettings['retries'])
 
-        linebuffer = None
-        maxretries = int(portSettings['retries'])
-        usefix     = bool(portSettings['usefix'])
+				debug('Reading into buffer..')
+				stop = False
 
-        debug('Reading into buffer..')
+				while (stop is not True and (linebuffer is None or len(linebuffer) < int(portSettings['length'])) and maxretries >0):
+					debug("Reading..")
+					buf = serial.read(1)#int(protocolSettings['length']) * int(protocolSettings['readbuffer']))
+					if len(buf) == 1:
+						debug("Buffer: " + str(buf))
+						byte = buf[0]
 
-        while ((linebuffer is None or len(linebuffer) < int(portSettings['length'])) and maxretries >0):
-            debug("Reading..")
-            buf = serial.read(1)
-                        
-            if len(buf) != 1:
-                    continue
+						if linebuffer is not None:
+							debug("length: " + str(len(linebuffer)))
+						
+						if portSettings['usefix'] == "1":
+							debug('using usefix')
+							byte = (byte & 0x7F)
 
-            debug("Buffer: " + str(buf))
-            byte = buf[0]
+						if linebuffer is not None:
+							linebuffer.append(byte)
+							debug('appending to buffer; is now ' + str(len(linebuffer)))
 
-            if linebuffer is None:
-                debug('Nothing received, retrying')
-                maxretries = maxretries -1
+						if (chr(byte) == '\x03'):
+							#end
+							debug(str(byte) + " : END")
+							if linebuffer is not None:
+								if (len(linebuffer) != int(portSettings['length'])):
+									debug("Got END but buffer too small, resetting..")
+									maxretries = maxretries -1
+									linebuffer = None
+								else:
+									debug("Finished reading")
+									stop = True
+									break
+						elif (chr(byte) == '\x02'):
+							#start
+							debug(str(byte) + " : BEGIN")
+							linebuffer = bytearray()
+						else:
+							debug(str(byte) + " : " + str(byte))
+					else:
+						debug("Nothing received, retrying")
+						maxretries = maxretries -1
 
-            debug("length: " + str(len(linebuffer)))
-
-            if usefix is True:
-                byte = (byte & 0x7F)
-
-            if linebuffer is not None:
-                linebuffer.append(byte)
-
-            if (chr(byte) == '\x03'):
-                debug(str(byte) + " : END")
-
-                if linebuffer is None:
-                    debug('empty buffer, continue')
-                    continue
-
-                if (len(linebuffer) == int(protocolSettings['length'])):
-                    debug("Finished reading")
-                    break
-                                        
-                debug("Got END but buffer too small, resetting..")
-                maxretries = maxretries -1
-                linebuffer = None
-                continue
-                                        
-            if (chr(byte) == '\x02'):
-                debug(str(byte) + " : START")
-                linebuffer = bytearray()
-                continue
-                        
-            debug('data read: ' + str(byte) + " : " + chr(byte))
-
-    except SerialException as e:
-        error("Could not setup serial reader on port " + str(portSettings['port']) + "; " + str(e))
-        pass
-        return None
-    except Exception as e:
-        error("Exception during reading: " + str(e))
-        return None
-    finally:
-        if (serial is not None and serial.isOpen()):
-            serial.close()
-
-    return linebuffer
+				if linebuffer is None:
+					error("Failed receiving anything. (maximum retries reached)")
+			else:
+				error("Serial port not open")
+		except SerialException as e:
+			error("Could not setup serial reader on port " + str(portSettings['port']) + "; " + str(e))
+		except Exception as e:
+			error("Exception during reading: " + str(e))
+	finally:
+		if (inserial is None and serial is not None and serial.isOpen()):
+			serial.close()
+	return linebuffer
 
 
 def export(weights, dbProperties):
-    conn = None
+    global conn
 
     try:
-        connection_string = "Driver={SQL Server Native Client 11.0};" \
-                            + "Server='" + dbProperties['host'] + "';" \
-                            + "Database='" + dbProperties['db']+ "';" \
-                            + "Uid=" + dbProperties['user'] + ';' \
-                            + "Pwd='" + dbProperties['pass'] + "';"
-
-        conn = pypyodbc.connect( connection_string )
+        connection_string ='Driver={SQL Server Native Client 11.0};Server=LOCALHOST\SQLEXPRESS;Database=BIS;Uid=sa;Pwd=;'
+        if conn is None:
+            conn = pypyodbc.connect(connection_string)
     except Exception as e:
         return error("Failed connecting to database: " + str(e))
 
@@ -192,13 +187,8 @@ def export(weights, dbProperties):
         return error('Failed to connect to db')
 
     cur = conn.cursor()
-    try:
-        if 'kg' in str(weight):
-            ton = weight.split(' kg')[0]
-        else:
-            ton = weight   
-        
-        query = "update WEGINGEN set " + dbProperties['column'] + " = " + str(ton) + ";"
+    try:        
+        query = "update WEGINGEN set WG_WEEGSCHAAL1 =" + str(weights[0]) + ", WG_WEEGSCHAAL2 =" + str(weights[1]) + ";"
         debug("query: " + query)
 
         cur.execute(query)
@@ -207,7 +197,8 @@ def export(weights, dbProperties):
         error("Could not execute query: " + str(e))
     finally:
         cur.close()
-        conn.close()
+        if job is False:
+            conn.close()
 
     return True
 
@@ -217,14 +208,20 @@ def process( data, portSettings ):
 
     weight = None
 
-    if (portSettings['protocol'] == 8304):
+    if (portSettings['protocol'] == '8304'):
         weight = process8304( data )
-    elif (portSettings['protocol'] == 8305):
+    elif (portSettings['protocol'] == '8305'):
         weight = process8305( data )
     else:
         return error('Unknown protocol: ' + portSettings['protocol'])
 
-    return weight
+    weight = int(weight)
+    log('weight for ' + portSettings['port']  + ' is ' + str(weight))
+
+    if weight < 0:
+        weight = 0
+    
+    return str(weight)
 
 def run(command, ports, db):
     if (command == "list"):
@@ -250,8 +247,10 @@ def run(command, ports, db):
 
             weights.append( weight )
 
-        debug("Exporting weights")
-        return export( weights, db )
+        if len(weights) > 0:
+            debug("Exporting weights")
+            export( weights, db )
+        return
 
     if (command == "jobread"):
         debug("Starting endless read")
@@ -303,7 +302,7 @@ def getPortsFromConfig( configList ):
         debug('Reading configuration section ' + confname)
         settings = configList[confname]
 
-        required = ["protocol","baud","port","timeout","bytesize","parity","stopbit","length","column"]
+        required = ["retries","protocol","baud","port","timeout","bytesize","parity","stopbit","length","column"]
         if not contains(settings, required):
                 return error('Missing setting in configuration of port ' + confname + ' ' + str(required))
 
